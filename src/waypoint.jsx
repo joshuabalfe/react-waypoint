@@ -1,4 +1,4 @@
-import React, { PropTypes } from 'react';
+import React, { PropTypes, Component, Children } from 'react';
 import { addEventListener, removeEventListener } from 'consolidated-events';
 
 const POSITIONS = {
@@ -30,20 +30,22 @@ function debugLog() {
  *   `POSITIONS.below`, or `POSITIONS.inside`.
  */
 function getCurrentPosition(bounds) {
-  if (bounds.viewportBottom - bounds.viewportTop === 0) {
+  const { waypointTop, waypointBottom, viewportTop, viewportBottom } = bounds;
+
+  if (viewportBottom - viewportTop === 0) {
     return POSITIONS.invisible;
   }
 
-  if (bounds.viewportTop <= bounds.waypointTop &&
-      bounds.waypointTop <= bounds.viewportBottom) {
+  if ((viewportTop <= waypointTop && waypointTop <= viewportBottom) ||
+      (viewportTop <= waypointBottom && waypointBottom <= viewportBottom)) {
     return POSITIONS.inside;
   }
 
-  if (bounds.viewportBottom < bounds.waypointTop) {
+  if (viewportBottom < waypointTop) {
     return POSITIONS.below;
   }
 
-  if (bounds.waypointTop < bounds.viewportTop) {
+  if (waypointBottom < viewportTop) {
     return POSITIONS.above;
   }
 
@@ -111,11 +113,16 @@ function computeOffsetPixels(offset, contextHeight) {
 /**
  * Calls a function when you scroll to the element.
  */
-export default class Waypoint extends React.Component {
+export default class Waypoint extends Component {
   constructor(props) {
     super(props);
 
-    this.refElement = (e) => this._ref = e;
+    this.beforeRef = (el) => this._beforeRef = el;
+    this.afterRef = (el) => this._afterRef = el;
+    this.genericRef = (el) => {
+      this.beforeRef(el);
+      this.afterRef(el);
+    };
   }
 
   componentWillMount() {
@@ -150,7 +157,7 @@ export default class Waypoint extends React.Component {
       { passive: true }
     );
 
-    // this._ref may occasionally not be set at this time. To help ensure that
+    // waypoint refs may occasionally not be set at this time. To help ensure that
     // this works smoothly, we want to delay the initial execution until the
     // next tick.
     setTimeout(() => {
@@ -189,7 +196,8 @@ export default class Waypoint extends React.Component {
       return this.props.scrollableAncestor;
     }
 
-    let node = this._ref;
+    // Scrollable ancestor should be the same regardless of which ref we use
+    let node = this._beforeRef;
 
     while (node.parentNode) {
       node = node.parentNode;
@@ -226,7 +234,7 @@ export default class Waypoint extends React.Component {
    *   called by a React lifecyle method
    */
   _handleScroll(event) {
-    if (!this._ref) {
+    if (!this._beforeRef || !this._afterRef) {
       // There's a chance we end up here after the component has been unmounted.
       return;
     }
@@ -253,6 +261,7 @@ export default class Waypoint extends React.Component {
       previousPosition,
       event,
       waypointTop: bounds.waypointTop,
+      waypointBottom: bounds.waypointBottom,
       viewportTop: bounds.viewportTop,
       viewportBottom: bounds.viewportBottom,
     };
@@ -277,6 +286,7 @@ export default class Waypoint extends React.Component {
         previousPosition,
         event,
         waypointTop: bounds.waypointTop,
+        waypointBottom: bounds.waypointBottom,
         viewportTop: bounds.viewportTop,
         viewportBottom: bounds.viewportBottom,
       });
@@ -285,6 +295,7 @@ export default class Waypoint extends React.Component {
         previousPosition: POSITIONS.inside,
         event,
         waypointTop: bounds.waypointTop,
+        waypointBottom: bounds.waypointBottom,
         viewportTop: bounds.viewportTop,
         viewportBottom: bounds.viewportBottom,
       });
@@ -293,8 +304,10 @@ export default class Waypoint extends React.Component {
 
   _getBounds() {
     const horizontal = this.props.horizontal;
-    const waypointTop = horizontal ? this._ref.getBoundingClientRect().left :
-      this._ref.getBoundingClientRect().top;
+    const waypointTop = horizontal ? this._beforeRef.getBoundingClientRect().left :
+      this._beforeRef.getBoundingClientRect().top;
+    const waypointBottom = horizontal ? this._afterRef.getBoundingClientRect().right :
+      this._afterRef.getBoundingClientRect().bottom;
 
     let contextHeight;
     let contextScrollTop;
@@ -311,6 +324,7 @@ export default class Waypoint extends React.Component {
 
     if (this.props.debug) {
       debugLog('waypoint top', waypointTop);
+      debugLog('waypoint bottom', waypointBottom);
       debugLog('scrollableAncestor height', contextHeight);
       debugLog('scrollableAncestor scrollTop', contextScrollTop);
     }
@@ -322,6 +336,7 @@ export default class Waypoint extends React.Component {
 
     return {
       waypointTop,
+      waypointBottom,
       viewportTop: contextScrollTop + topOffsetPx,
       viewportBottom: contextBottom - bottomOffsetPx,
     };
@@ -331,13 +346,39 @@ export default class Waypoint extends React.Component {
    * @return {Object}
    */
   render() {
-    // We need an element that we can locate in the DOM to determine where it is
-    // rendered relative to the top of its context.
-    return <span ref={this.refElement} style={{ fontSize: 0 }} />;
+    // If no children are supplied we need an element that we can locate in the
+    // DOM to determine where it is rendered relative to the top of its context.
+    let children = <span ref={this.genericRef} style={{ all: 'unset', fontSize: 0 }} />;
+
+    // If children are supplied we can attatch refs to the respective top and bottoms
+    if (Children.count(this.props.children) > 0) {
+      children = Children.map(this.props.children, (child, index) => {
+        // There must be a better way of adding ref other than cloning
+        if (Children.count(this.props.children)) {
+          return React.cloneElement(child, { ref: this.genericRef });
+        }
+
+        if (index === 0) {
+          return React.cloneElement(child, { ref: this.beforeRef });
+        }
+
+        if (index === Children.count) {
+          return React.cloneElement(child, { ref: this.afterRef });
+        }
+
+        return child;
+      });
+    }
+
+    return children;
   }
 }
 
 Waypoint.propTypes = {
+  children: PropTypes.oneOfType([
+    PropTypes.arrayOf(PropTypes.node),
+    PropTypes.node,
+  ]),
   debug: PropTypes.bool,
   onEnter: PropTypes.func,
   onLeave: PropTypes.func,
